@@ -1,8 +1,9 @@
 const mysql = require('mysql2/promise')
-require('dotenv').config();
-const dbUser = process.env.DB_USER;
-const dbPassword = process.env.DB_PASSWORD;;
+const dotenv = require('dotenv');
 
+// choose env file based on NODE_ENV
+const envFile = `.env.${process.env.NODE_ENV || 'development'}`;
+dotenv.config({ path: envFile });
 const pool = mysql.createPool({
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
