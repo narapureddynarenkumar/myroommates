@@ -205,3 +205,77 @@ exports.resetPassword = async (req, res) => {
     conn.release();
   }
 };
+
+exports.updateUser = async (req, res) => {
+    const { userId, name, email } = req.body;
+
+    // Basic validation
+    if (!userId || !name?.trim() || !email?.trim()) {
+        return res.json({
+            success: false,
+            message: "All fields are required"
+        });
+    }
+
+    const trimmedName = name.trim();
+    const trimmedEmail = email.trim();
+
+    // Validate email format
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(trimmedEmail)) {
+        return res.json({
+            success: false,
+            message: "Invalid email format"
+        });
+    }
+
+    let conn;
+    try {
+        conn = await db.getConnection();
+        await conn.beginTransaction();
+
+        // Check if email already exists for another user
+        const [rows] = await conn.execute(
+            "SELECT id FROM users WHERE email = ? AND id != ?",
+            [trimmedEmail, userId]
+        );
+
+        if (rows.length > 0) {
+            await conn.rollback();
+            return res.json({
+                success: false,
+                message: "Email already in use"
+            });
+        }
+
+        // Update user
+        const [result] = await conn.execute(
+            "UPDATE users SET name = ?, email = ? WHERE id = ?",
+            [trimmedName, trimmedEmail, userId]
+        );
+
+        if (result.affectedRows > 0) {
+            await conn.commit();
+            res.json({
+                success: true,
+                message: "Profile updated successfully"
+            });
+        } else {
+            await conn.rollback();
+            res.json({
+                success: false,
+                message: "Update failed"
+            });
+        }
+
+    } catch (err) {
+        if (conn) await conn.rollback();
+        console.error(err);
+        res.json({
+            success: false,
+            message: "Server error",
+        });
+    } finally {
+        if (conn) conn.release();
+    }
+};

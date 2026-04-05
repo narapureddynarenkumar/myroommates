@@ -3,8 +3,7 @@ const db = require('../config/db');
 // ------------------------------------
 // GET OR CREATE CATEGORY
 // ------------------------------------
-exports.getOrCreateCategory = async(req, res) {
-    const {room_id, category_name} = req.body
+exports.getOrCreateCategory = async (room_id, category_name) => {
     const name = category_name.trim().toLowerCase().replace(/^./, c => c.toUpperCase());
 
     // 1. Check if exists
@@ -34,7 +33,7 @@ exports.getOrCreateCategory = async(req, res) {
 // ------------------------------------
 // VALIDATE CATEGORY BELONGS TO ROOM
 // ------------------------------------
- exports.categoryBelongsToRoom = async(room_id, category_id) {
+exports.categoryBelongsToRoom = async (room_id, category_id) => {
     const [rows] = await db.execute(
         `SELECT id
          FROM room_categories
@@ -50,63 +49,113 @@ exports.getOrCreateCategory = async(req, res) {
 // ------------------------------------
 // CREATE EXPENSE
 // ------------------------------------
-exports.createExpense = async(req, res) {
-    const {droom_id,member_id,category_id,amount,title,date ,created_by} = req.body
+exports.createExpense = async (req, res) => {
+    try {
+        const { room_id, member_id, category_id, amount, title, date, created_by } = req.body;
 
-    const isValid = await categoryBelongsToRoom(data.room_id, data.category_id);
+        const isValid = await exports.categoryBelongsToRoom(room_id, category_id);
+        if (!isValid) {
+            return res.status(201).json({ message: "Invalid category for this room", success: false });
+        }
 
-    if (!isValid) {
-        throw new Error("Invalid category for this room");
+        const [year, month] = date.split('-');
+
+         console.log(year, month)
+         const isFrozen = await isMonthFrozen(room_id, month,year)
+        if(isFrozen > 0){
+            return res.status(201).json({ message: "Month is frozen. Cannot add expense" , success: false});
+        }
+
+        const formattedDate = new Date(date);
+
+        const [result] = await db.execute(
+            `INSERT INTO expenses
+            (room_id, paid_by, category_id, amount, note, expense_date, created_by)
+            VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [room_id, member_id, category_id, amount, title || null, formattedDate, created_by]
+        );
+
+        
+
+        res.json({success: true, message: 'Expense added successfully'});
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({success: false, error: "Something went wrong" });
     }
-
-    const formattedDate = new Date(date).toISOString().slice(0, 10);
-
-    const [result] = await db.execute(
-        `INSERT INTO expenses
-        (room_id, paid_by, category_id, amount, note, expense_date, created_by)
-        VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [
-            room_id,
-            member_id,
-            category_id,
-            amount,
-            title || null,
-            formattedDate,
-            created_by
-        ]
-    );
-
-    const id = result.insertId;
-
-    const [rows] = await db.execute(
-        `SELECT
-            m.name AS member_name,
-            e.id,
-            e.room_id,
-            rc.name AS category_name,
-            e.expense_date,
-            e.note,
-            e.amount
-        FROM expenses e
-        INNER JOIN room_members m ON e.paid_by = m.id
-        INNER JOIN room_categories rc ON rc.id = e.category_id
-        WHERE e.id = ?`,
-        [id]
-    );
-
-    return rows[0];
 }
 
 // ------------------------------------
 // UPDATE EXPENSE
 // ------------------------------------
-async function updateExpense(data) {
+exports.updateExpense = async (req, res) => {
+    const { id, room_id, member_id, category_id, amount, note, date } = req.body;
+
     const conn = await db.getConnection();
+    // -----------------------------
+        // 1️⃣ Get existing expense
+        // -----------------------------
+        const [rows] = await conn.execute(
+            `SELECT room_id, DATE_FORMAT(expense_date, '%Y-%m-%d') AS expense_date FROM expenses WHERE id=?`,
+            [id]
+        );
+
+        if (!rows.length) {
+            return res.status(201).json({
+                success: false,
+                message: "Expense not found"
+            });
+        }
+
+        const expense = rows[0];
+        // const [year, month] = expense.expense_date.split('-')
+        // -----------------------------
+// 2️⃣ Check freeze logic (FIXED)
+// -----------------------------
+
+        let checkDate = expense.expense_date;
+
+        // If user is changing date → use new date
+        if (date && normalizeDate(date) !== expense.expense_date) {
+            checkDate = date;
+        }
+        const [year, month] = checkDate.split('-')
+         console.log(year, month)
+        const isFrozen = await isMonthFrozen(expense.room_id, month, year);
+
+        if (isFrozen > 0) {
+            return res.status(400).json({
+                success: false,
+                message: date && normalizeDate(date) !== expense.expense_date
+                    ? "Cannot move expense to a frozen month"
+                    : "Cannot edit expense. Month is frozen"
+            });
+        }
+        // -----------------------------
+        // 2️⃣ Check freeze (OLD date)
+        // -----------------------------
+        // const frozenOld = await isMonthFrozen(expense.room_id, month,year);
+        // if (frozenOld > 0) {
+        //     return res.status(201).json({
+        //         success: false,
+        //         message: "Cannot edit expense. Month is frozen"
+        //     });
+        // }
+        // if (date) {
+        //     const [year,month] = date.split('-')
+        //     const frozenNew = await isMonthFrozen(expense.room_id, month, year);
+
+        //     if (frozenNew > 0) {
+        //         return res.status(201).json({
+        //             success: false,
+        //             message: "Cannot move expense to a frozen month"
+        //         });
+        //     }
+        // }
 
     try {
         await conn.beginTransaction();
 
-        const formattedDate = new Date(data.date).toISOString().slice(0, 10);
+        // const formattedDate = new Date(date);
 
         await conn.execute(
             `UPDATE expenses 
@@ -115,23 +164,17 @@ async function updateExpense(data) {
                  paid_by = ?, 
                  note = ?, 
                  expense_date = ?
-             WHERE id = ?`,
-            [
-                data.amount,
-                data.category_id,
-                data.member_id,
-                data.note,
-                formattedDate,
-                data.id
-            ]
+             WHERE id = ?
+               AND room_id = ?`,
+            [amount, category_id, member_id, note || null, date, id, room_id]
         );
 
         await conn.commit();
-        return true;
-
+        res.json({ success: true , message: 'Expense updated successfully'});
     } catch (err) {
         await conn.rollback();
-        return false;
+        console.error(err);
+        res.status(500).json({ message: "Failed to update expense", success: false });
     } finally {
         conn.release();
     }
@@ -140,9 +183,36 @@ async function updateExpense(data) {
 // ------------------------------------
 // DELETE (SOFT)
 // ------------------------------------
-exports.function deleteExpense = async(req, res) {
-    const {id, room_id} = req.body;
+exports.deleteExpense = async (req, res) => {
+    const { id, room_id } = req.body;
     const conn = await db.getConnection();
+
+    const [rows] = await conn.execute(
+            `SELECT room_id,DATE_FORMAT(expense_date, '%Y-%m-%d') AS  expense_date FROM expenses WHERE id=?`,
+            [id]
+        );
+
+        if (!rows.length) {
+            return res.status(404).json({
+                success: false,
+                message: "Expense not found"
+            });
+        }
+
+        const expense = rows[0];
+        const [year, month] = expense.expense_date
+
+        // -----------------------------
+        // 2️⃣ Check freeze
+        // -----------------------------
+        const frozen = await isMonthFrozen( expense.room_id, month,year );
+
+        if (frozen > 0) {
+            return res.status(201).json({
+                success: false,
+                message: "Cannot delete expense. Month is frozen"
+            });
+        }
 
     try {
         await conn.beginTransaction();
@@ -160,11 +230,11 @@ exports.function deleteExpense = async(req, res) {
         }
 
         await conn.commit();
-        return true;
-
+        res.json({ success: true });
     } catch (err) {
         await conn.rollback();
-        return false;
+        console.error(err);
+        res.status(500).json({ error: "Failed to delete expense" });
     } finally {
         conn.release();
     }
@@ -173,56 +243,70 @@ exports.function deleteExpense = async(req, res) {
 // ------------------------------------
 // GET ALL EXPENSES
 // ------------------------------------
-exports.function getAllExpenses = async(req, res) {
-    const {room_id, month, year, member_id } = req.query.params
+exports.getAllExpenses = async (req, res) => {
+    try {
+        const { room_id, month, year } = req.params;
+        const {memberId} = req.query ?? {}
 
-    let sql = `
-        SELECT
-            e.id,
-            e.room_id,
-            rc.name AS category,
-            e.expense_date,
-            e.note,
-            e.amount,
-            m.name AS member_name,
-            e.category_id,
-            e.paid_by AS member_id
-        FROM expenses e
-        INNER JOIN room_members m ON e.paid_by = m.id
-        INNER JOIN room_categories rc ON rc.id = e.category_id
-        WHERE e.room_id = ?
-        AND e.is_deleted = 0
-        AND MONTH(e.expense_date) = ?
-        AND YEAR(e.expense_date) = ?
-    `;
+        const startDate = `${year}-${month}-01`;
+        const endDate = `${year}-${month}-31`;
 
-    const params = [room_id, month, year];
+        let sql = `
+            SELECT
+                e.id,
+                e.room_id,
+                rc.name AS category,
+                e.expense_date,
+                e.note,
+                e.amount,
+                m.name AS member_name,
+                e.category_id,
+                e.paid_by AS member_id
+            FROM expenses e
+            INNER JOIN room_members m ON e.paid_by = m.id
+            INNER JOIN room_categories rc ON rc.id = e.category_id
+            WHERE e.room_id = ?
+              AND e.is_deleted = 0
+              AND e.expense_date BETWEEN ? AND ?
+        `;
 
-    if (member_id) {
-        sql += " AND e.paid_by = ?";
-        params.push(member_id);
+        const params = [room_id, startDate, endDate];
+
+        if (memberId) {
+            sql += " AND e.paid_by = ?";
+            params.push(memberId);
+        }
+
+        sql += " ORDER BY e.id DESC";
+
+        const [rows] = await db.execute(sql, params);
+        res.json({"expenses":rows,"frozen": isMonthFrozen(room_id, month, year) == 1 ? true : false});
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: "Failed to fetch expenses" });
     }
-
-    sql += " ORDER BY e.id DESC";
-
-    const [rows] = await db.execute(sql, params);
-    return rows;
 }
 
 // ------------------------------------
 // CHECK MONTH FROZEN
 // ------------------------------------
-exports.isMonthFrozen = async() {
-    const {room_id, month, year} = req.params
-    const [rows] = await db.execute(
-        `SELECT COUNT(*) AS count
-         FROM calculation_snapshots
-         WHERE room_id = ?
-           AND month = ?
-           AND year = ?
-           AND frozen = 1`,
-        [room_id, month, year]
-    );
+const isMonthFrozen = async (room_id, month, year) => {
+   
+        const [rows] = await db.execute(
+            `SELECT COUNT(*) AS count
+             FROM calculation_snapshots
+             WHERE room_id = ?
+               AND month = ?
+               AND year = ?
+               AND frozen = 1`,
+            [room_id, month, year]
+        );
 
-    return rows[0].count;
+        return rows[0].count 
+    
+}
+
+function normalizeDate(date) {
+    const d = new Date(date);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;
 }

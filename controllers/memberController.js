@@ -33,43 +33,6 @@ exports.getRoomMembers = async (req, res) => {
 
 
 /* =========================
-   GET MEMBERS BY MONTH
-=========================*/
-exports.getMembersByMonth = async (req, res) => {
-  const { month, year } = req.params;
-
-  try {
-    const firstDay = `${year}-${String(month).padStart(2, '0')}-01`;
-    const lastDay = new Date(year, month, 0).toISOString().slice(0, 10);
-
-    const [rows] = await db.execute(
-      `SELECT 
-          id,
-          name,
-          start_date,
-          end_date,
-          excluded,
-          categories
-       FROM members
-       WHERE start_date <= ?
-         AND (end_date IS NULL OR end_date >= ?)`,
-      [lastDay, firstDay]
-    );
-
-    const formatted = rows.map(row => ({
-      ...row,
-      categories: row.categories ? JSON.parse(row.categories) : []
-    }));
-
-    return res.json(formatted);
-
-  } catch (err) {
-    return res.status(500).json({ message: err.message });
-  }
-};
-
-
-/* =========================
    VALIDATE MEMBER IN ROOM
 =========================*/
 const validateMemberInRoom = async (phone, room_id, conn) => {
@@ -103,7 +66,7 @@ exports.addMember = async (req, res) => {
     );
 
     if (exists) {
-      return res.status(400).json({ message: "Member already exists" });
+      return res.status(201).json({ message: "Member already exists" ,status: false});
     }
 
     await conn.beginTransaction();
@@ -125,7 +88,7 @@ exports.addMember = async (req, res) => {
 
   } catch (err) {
     await conn.rollback();
-    return res.status(500).json({ message: err.message });
+    return res.status(500).json({ success: false,message: err.message });
   } finally {
     conn.release();
   }
@@ -136,7 +99,7 @@ exports.addMember = async (req, res) => {
    SAVE MONTHLY RULE
 =========================*/
 exports.saveMonthlyRule = async (req, res) => {
-  const { memberId, year, month, excluded, start, end, categories } = req.body;
+  const { member_id, year, month, excluded, start_date, end_date, categories } = req.body;
 
   const conn = await db.getConnection();
 
@@ -152,14 +115,14 @@ exports.saveMonthlyRule = async (req, res) => {
          excluded = VALUES(excluded),
          start_date = VALUES(start_date),
          end_date = VALUES(end_date)`,
-      [memberId, year, month, excluded, start, end]
+      [member_id, year, month, excluded || 0, start_date || null, end_date || null]
     );
 
     // Get rule ID
     const [ruleRows] = await conn.execute(
       `SELECT id FROM member_month_rules
        WHERE room_member_id = ? AND year = ? AND month = ?`,
-      [memberId, year, month]
+      [member_id, year, month]
     );
 
     const ruleId = ruleRows[0]?.id;

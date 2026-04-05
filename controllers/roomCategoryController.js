@@ -79,7 +79,7 @@ exports.create = async (req, res) => {
   const { room_id, name, created_by } = req.body;
 
   if (!room_id || !name) {
-    return res.status(400).json({ message: "room_id and name required" });
+    return res.status(201).json({ message: "room_id and name required" });
   }
 
   const normalizedName = normalize(name);
@@ -92,7 +92,7 @@ exports.create = async (req, res) => {
 
     if (isExists) {
       await conn.rollback();
-      return res.status(400).json({
+      return res.status(201).json({
         message: "Category already exists in this room"
       });
     }
@@ -113,7 +113,7 @@ exports.create = async (req, res) => {
   } catch (err) {
     await conn.rollback();
     console.error(err);
-    return res.status(500).json({ message: "Server error" });
+    return res.status(500).json({success: false, message: "Server error" });
   } finally {
     conn.release();
   }
@@ -123,11 +123,11 @@ exports.create = async (req, res) => {
 // UPDATE
 // ---------------------------
 exports.update = async (req, res) => {
-  const { id } = req.params;
-  const { name } = req.body;
+
+  const { name, id, created_by } = req.body;
 
   if (!name) {
-    return res.status(400).json({ message: "Name required" });
+    return res.status(201).json({ success: false, message: "Name required" });
   }
 
   const normalizedName = normalize(name);
@@ -140,7 +140,7 @@ exports.update = async (req, res) => {
 
     if (!current) {
       await conn.rollback();
-      return res.status(404).json({ message: "Category not found" });
+      return res.status(404).json({ success: false, message: "Category not found" });
     }
 
     const isExists = await exists(
@@ -152,7 +152,7 @@ exports.update = async (req, res) => {
 
     if (isExists) {
       await conn.rollback();
-      return res.status(400).json({
+      return res.status(400).json({success: false,
         message: "Category already exists in this room"
       });
     }
@@ -171,7 +171,7 @@ exports.update = async (req, res) => {
   } catch (err) {
     await conn.rollback();
     console.error(err);
-    return res.status(500).json({ message: err.message });
+    return res.status(500).json({ success: false,message: err.message });
   } finally {
     conn.release();
   }
@@ -201,7 +201,7 @@ exports.delete = async (req, res) => {
   } catch (err) {
     await conn.rollback();
     console.error(err);
-    return res.status(500).json({ message: "Delete failed" });
+    return res.status(500).json({ success: false,message: "Delete failed" });
   } finally {
     conn.release();
   }
