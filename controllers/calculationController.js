@@ -513,8 +513,7 @@ exports.unfreezeSnapshot = async (req, res) => {
 };
 
 exports.getFrozenSnapshots = async (req, res) => {
-  
-     const connection = await db.getConnection();
+    const connection = await db.getConnection();
 
     try {
         const room_id = req.params.room_id;
@@ -522,25 +521,58 @@ exports.getFrozenSnapshots = async (req, res) => {
         if (!room_id) {
             return res.status(400).json({ error: "room_id is required" });
         }
-       
 
-        // -----------------------------
-        // 1️⃣ Fetch frozen snapshots
-        // -----------------------------
+        // 1️⃣ Get snapshots
         const [rows] = await connection.execute(
-            `SELECT id, month, year, total_amount, frozen, created_at
-             FROM calculation_snapshots
-             WHERE room_id=? AND frozen=1
-             ORDER BY year DESC, month DESC`,
+            `SELECT s.id, s.month, s.year, s.total_amount, s.frozen, s.created_at,
+                    IFNULL(cs.is_settled, 0) as pending_count
+             FROM calculation_snapshots s 
+             LEFT JOIN (
+                SELECT snapshot_id, COUNT(1) as is_settled
+                FROM calculation_settlements 
+                WHERE status = 'pending'
+                GROUP BY snapshot_id
+             ) cs ON s.id = cs.snapshot_id
+             WHERE s.room_id=? AND s.frozen=1
+             ORDER BY s.year DESC, s.month DESC`,
             [room_id]
         );
 
-        // -----------------------------
-        // 2️⃣ Format result with month name
-        // -----------------------------
+        // 2️⃣ Get ALL category breakdowns in ONE query
+        const [categoryRows] = await connection.execute(
+            `SELECT 
+                e.room_id,
+                YEAR(e.expense_date) as year,
+                MONTH(e.expense_date) as month,
+                c.name,
+                SUM(e.amount) as amount
+             FROM expenses e
+             JOIN room_categories c ON c.id = e.category_id
+             WHERE e.room_id = ?
+             GROUP BY year, month, c.name`,
+            [room_id]
+        );
+
+        // 3️⃣ Group category data
+        const categoryMap = {};
+
+        categoryRows.forEach(row => {
+            const key = `${row.year}-${row.month}`;
+            if (!categoryMap[key]) {
+                categoryMap[key] = [];
+            }
+            categoryMap[key].push({
+                name: row.name,
+                amount: parseFloat(row.amount)
+            });
+        });
+
+        // 4️⃣ Build final response
         const data = rows.map(row => {
             const monthName = new Date(row.year, row.month - 1, 1)
                 .toLocaleString('default', { month: 'long' });
+
+            const key = `${row.year}-${row.month}`;
 
             return {
                 id: row.id,
@@ -548,7 +580,9 @@ exports.getFrozenSnapshots = async (req, res) => {
                 year: row.year,
                 month_name: monthName,
                 total_amount: parseFloat(row.total_amount),
-                created_at: row.created_at
+                created_at: row.created_at,
+                is_settled: row.pending_count === 0,
+                category_breakdown: categoryMap[key] || []
             };
         });
 
