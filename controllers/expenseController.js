@@ -298,7 +298,7 @@ exports.getAllExpenses = async (req, res) => {
 
         res.json({
             expenses: rows,
-            frozen: frozen > 0 : true : false
+            frozen: frozen > 0 ? true : false
         });
 
     } catch (err) {
