@@ -246,10 +246,23 @@ exports.deleteExpense = async (req, res) => {
 exports.getAllExpenses = async (req, res) => {
     try {
         const { room_id, month, year } = req.params;
-        const {memberId} = req.query ?? {}
+        const { memberId } = req.query ?? {};
 
-        const startDate = `${year}-${month}-01`;
-        const endDate = `${year}-${month}-31`;
+        // Validation
+        if (!room_id || !month || !year) {
+            return res.status(201).json({ error: "Missing required parameters" });
+        }
+
+        if (isNaN(month) || isNaN(year)) {
+            return res.status(201).json({ error: "Invalid month or year" });
+        }
+
+        // Format dates properly
+        const formattedMonth = String(month).padStart(2, "0");
+        const lastDay = new Date(year, month, 0).getDate();
+
+        const startDate = `${year}-${formattedMonth}-01`;
+        const endDate = `${year}-${formattedMonth}-${lastDay}`;
 
         let sql = `
             SELECT
@@ -280,12 +293,19 @@ exports.getAllExpenses = async (req, res) => {
         sql += " ORDER BY e.id DESC";
 
         const [rows] = await db.execute(sql, params);
-        res.json({"expenses":rows,"frozen": isMonthFrozen(room_id, month, year) == 1 ? true : false});
+
+        const frozen = await isMonthFrozen(room_id, month, year);
+
+        res.json({
+            expenses: rows,
+            frozen: frozen > 0 : true : false
+        });
+
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: "Failed to fetch expenses" });
     }
-}
+};
 
 // ------------------------------------
 // CHECK MONTH FROZEN
