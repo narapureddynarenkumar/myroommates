@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const dayjs = require('dayjs');
 
 /* =========================
    GET ROOMS
@@ -87,13 +88,14 @@ exports.createRoom = async (req, res) => {
 
       const userId = userRows.length > 0 ? userRows[0].id : null;
 
-      const joinDate = member.joinDate
+      // const joinDate = member.joinDate
+      const formatted = dayjs(member.joinDate).format('YYYY-MM-DD');
 
       await conn.execute(insertMemberQuery, [
         room_id,
         member.name,
         member.phone,
-        joinDate,
+        formatted,
         userId
       ]);
     }
