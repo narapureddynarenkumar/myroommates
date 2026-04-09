@@ -2,7 +2,7 @@ const db = require('../config/db');
 
 exports.getMonthlyCalculation = async (req, res) => {
     try {
-      
+
         // -----------------------------
         // 1️⃣ Inputs
         // -----------------------------
@@ -15,7 +15,7 @@ exports.getMonthlyCalculation = async (req, res) => {
         }
 
         // -----------------------------
-        // 2️⃣ Date helpers (NO timezone bug)
+        // 2️⃣ Date helpers
         // -----------------------------
         const pad = (n) => n.toString().padStart(2, '0');
 
@@ -37,7 +37,7 @@ exports.getMonthlyCalculation = async (req, res) => {
             const snapshot = snapRows[0];
 
             const [shares] = await db.execute(
-                `SELECT m.name AS name, share_amount AS owed
+                `SELECT m.name, share_amount AS owed
                  FROM calculation_member_shares ms
                  JOIN room_members m ON ms.member_id = m.id
                  WHERE snapshot_id=?`,
@@ -70,15 +70,15 @@ exports.getMonthlyCalculation = async (req, res) => {
             `SELECT SUM(amount) AS total_amount
              FROM expenses
              WHERE room_id = ?
-             AND is_deleted = 0
-             AND expense_date BETWEEN ? AND ?`,
+               AND is_deleted = 0
+               AND expense_date BETWEEN ? AND ?`,
             [room_id, start_date, end_date]
         );
 
         const total_amount = Number(totalRows[0].total_amount || 0);
 
         // -----------------------------
-        // 5️⃣ OPTIMIZED SQL
+        // 5️⃣ FINAL OPTIMIZED SQL
         // -----------------------------
         const [members] = await db.execute(
             `WITH member_base AS (
@@ -87,26 +87,43 @@ exports.getMonthlyCalculation = async (req, res) => {
                     rm.name,
                     rm.is_active,
                     COALESCE(mr.excluded, 0) AS excluded,
-                    GREATEST(COALESCE(mr.start_date, ?), ?) AS start_date,
-                    LEAST(COALESCE(rm.left_at, mr.end_date, ?), ?) AS end_date,
+
+                    -- ✅ Proper lifecycle clamp
+                    GREATEST(
+                        COALESCE(mr.start_date, rm.joined_at, ?),
+                        rm.joined_at,
+                        ?
+                    ) AS start_date,
+
+                    LEAST(
+                        COALESCE(mr.end_date, rm.left_at, ?),
+                        COALESCE(rm.left_at, ?),
+                        ?
+                    ) AS end_date,
+
                     mr.start_date AS s_date,
                     mr.end_date AS e_date
+
                 FROM room_members rm
                 LEFT JOIN member_month_rules mr
                     ON rm.id = mr.room_member_id
                     AND mr.month = ?
                     AND mr.year = ?
+
                 WHERE rm.room_id = ?
-                  AND (
-                        rm.joined_at <= ?  
-                        AND (rm.left_at IS NULL OR rm.left_at >= ?) 
-                      )
+                  -- ✅ ONLY show members inside lifecycle
+                  AND rm.joined_at <= ?
+                  AND (rm.left_at IS NULL OR rm.left_at >= ?)
             ),
 
             member_days AS (
                 SELECT *,
                     CASE
-                        WHEN excluded = 1 OR end_date < start_date THEN 0
+                        WHEN excluded = 1
+                             OR end_date < start_date
+                             OR start_date > ?
+                             OR end_date < ?
+                        THEN 0
                         ELSE DATEDIFF(end_date, start_date) + 1
                     END AS days_present
                 FROM member_base
@@ -143,7 +160,6 @@ exports.getMonthlyCalculation = async (req, res) => {
                     ON cem.member_id = m.member_id
                     AND cem.category_id = e.category_id
                 WHERE m.excluded = 0
-                  AND m.days_present > 0   
                   AND cem.category_id IS NULL
             ),
 
@@ -179,54 +195,69 @@ exports.getMonthlyCalculation = async (req, res) => {
                 ROUND(COALESCE(p.paid, 0) - COALESCE(es.share, 0), 2) AS balance,
                 m.days_present,
                 m.excluded,
+
                 CASE
                     WHEN (m.is_active = 0 OR m.s_date IS NOT NULL)
                     THEN m.start_date
                     ELSE NULL
-                    END AS start_date,
+                END AS start_date,
+
                 CASE
                     WHEN (m.is_active = 0 OR m.e_date IS NOT NULL)
                     THEN m.end_date
                     ELSE NULL
                 END AS end_date
+
             FROM member_days m
             LEFT JOIN expense_split es ON es.member_id = m.member_id
-            LEFT JOIN paid_amounts p ON p.member_id = m.member_id WHERE m.days_present > 0`,
+            LEFT JOIN paid_amounts p ON p.member_id = m.member_id`,
             [
-                  start_date, start_date,
-                  end_date, end_date,
-                  month, year, room_id,
-                  end_date, start_date,   
-                  month, year,
-                  room_id, start_date, end_date,
-                  room_id, start_date, end_date
+                // start_date clamp
+                start_date, start_date,
+                end_date, end_date, end_date,
+
+                // rules
+                month, year,
+                room_id,
+                end_date, start_date,
+
+                // days validation
+                end_date, start_date,
+
+                // category exclusions
+                month, year,
+
+                // expenses
+                room_id, start_date, end_date,
+
+                // paid
+                room_id, start_date, end_date
             ]
         );
 
         // -----------------------------
-        // 6️⃣ Type casting
+        // 6️⃣ Type casting + tooltip
         // -----------------------------
         members.forEach(m => {
             let tooltip;
 
             if (m.excluded) {
                 tooltip = `Excluded for ${new Date(start_date).toLocaleString('default', { month: 'long' })}`;
-            } else if (m.days_present === getDaysBetween(start_date, end_date)) {
+            } else if (m.days_present === total_days) {
                 tooltip = 'Full month • All Categories';
             } else {
                 tooltip = `${m.days_present} days active`;
             }
+
             m.member_id = Number(m.member_id);
             m.paid = Number(m.paid);
             m.owed = Number(m.owed);
             m.balance = Number(m.balance);
             m.days_present = Number(m.days_present);
             m.excluded = !!m.excluded;
-            m.start_date = m.start_date,
-            m.end_date = m.end_date,
-            m.tooltip = tooltip
+            m.tooltip = tooltip;
         });
-console.log(members)
+       
         // -----------------------------
         // 7️⃣ Settlement logic
         // -----------------------------
@@ -271,7 +302,7 @@ console.log(members)
         }
 
         // -----------------------------
-        // 8️⃣ Final response
+        // 8️⃣ Response
         // -----------------------------
         const monthName = new Date(year, month - 1).toLocaleString('default', {
             month: 'long',
@@ -549,7 +580,7 @@ exports.getFrozenSnapshots = async (req, res) => {
              FROM expenses e
              JOIN room_categories c ON c.id = e.category_id
              WHERE e.room_id = ?
-             GROUP BY year, month, c.name`,
+             GROUP BY year, month, c.name, e.room_id`,
             [room_id]
         );
 

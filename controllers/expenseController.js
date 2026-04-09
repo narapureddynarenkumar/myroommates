@@ -119,7 +119,7 @@ exports.updateExpense = async (req, res) => {
             checkDate = date;
         }
         const [year, month] = checkDate.split('-')
-         console.log(year, month)
+         // console.log(year, month)
         const isFrozen = await isMonthFrozen(expense.room_id, month, year);
 
         if (isFrozen > 0) {
@@ -163,10 +163,12 @@ exports.updateExpense = async (req, res) => {
                  category_id = ?, 
                  paid_by = ?, 
                  note = ?, 
-                 expense_date = ?
+                 expense_date = ?,
+                 updated_by = ?
+                 updated_at = now()
              WHERE id = ?
                AND room_id = ?`,
-            [amount, category_id, member_id, note || null, date, id, room_id]
+            [amount, category_id, member_id, note || null, new Date(date), id, room_id]
         );
 
         await conn.commit();

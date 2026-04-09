@@ -76,7 +76,7 @@ exports.addMember = async (req, res) => {
        VALUES (?, ?, ?, ?)`,
       [
         data.roomId,
-        new Date(data.join_date).toISOString().slice(0, 10),
+        new Date(data.join_date),
         data.name.trim(),
         data.mobile_no.trim()
       ]

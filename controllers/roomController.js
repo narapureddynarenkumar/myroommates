@@ -39,7 +39,7 @@ exports.getRooms = async (req, res) => {
     return res.json(rows);
 
   } catch (err) {
-    return res.status(500).json({ message: err.message });
+    return res.status(500).json({ message: 'Failed to load rooms' });
   }
 };
 
@@ -47,11 +47,22 @@ exports.getRooms = async (req, res) => {
 /* =========================
    CREATE ROOM
 =========================*/
+
+
 exports.createRoom = async (req, res) => {
   const data = req.body;
 
+  // -------------------- 1. Validation --------------------
   if (!data.name) {
-    return res.status(201).json({ message: "Room name required" });
+    return res.status(400).json({ message: "Room name required" });
+  }
+
+  if (!data.created_by || !data.creator_phone) {
+    return res.status(400).json({ message: "Creator info required" });
+  }
+
+  if (!Array.isArray(data.members)) {
+    data.members = [];
   }
 
   const conn = await db.getConnection();
@@ -59,58 +70,82 @@ exports.createRoom = async (req, res) => {
   try {
     await conn.beginTransaction();
 
-    // Insert room
+    // -------------------- 2. Insert Room --------------------
     const [roomResult] = await conn.execute(
       "INSERT INTO rooms (name, created_by) VALUES (?, ?)",
       [data.name, data.created_by]
     );
-
     const room_id = roomResult.insertId;
 
-    // Prepare queries
-    const userQuery = "SELECT id FROM users WHERE phone = ?";
-    const insertMemberQuery = `
-      INSERT INTO room_members 
-      (room_id, name, phone, joined_at, user_id) 
-      VALUES (?, ?, ?, ?, ?)
-    `;
+    // -------------------- 3. Prepare Members --------------------
+    const allPhones = [
+      ...data.members.map(m => m.phone),
+      data.creator_phone
+    ];
+    const uniquePhones = [...new Set(allPhones)];
 
-    // Insert categories
-    const [roomCategory] = await conn.execute(
-      `INSERT INTO room_categories 
-       (room_id, master_category_id, name, created_by) 
-       SELECT ?, id, name, ? FROM categories_master`,
-      [room_id,  data.created_by]
-    );
-
-    for (const member of data.members) {
-      const [userRows] = await conn.execute(userQuery, [member.phone]);
-
-      const userId = userRows.length > 0 ? userRows[0].id : null;
-
-      // const joinDate = member.joinDate
-      const formatted = dayjs(member.joinDate).format('YYYY-MM-DD');
-
-      await conn.execute(insertMemberQuery, [
-        room_id,
-        member.name,
-        member.phone,
-        formatted,
-        userId
-      ]);
+    // -------------------- 4. Fetch existing users --------------------
+    let users = [];
+    if (uniquePhones.length > 0) {
+      const placeholders = uniquePhones.map(() => '?').join(', ');
+      const [rows] = await conn.execute(
+        `SELECT id, phone, name FROM users WHERE phone IN (${placeholders})`,
+        uniquePhones
+      );
+      users = rows;
     }
 
+    const userMap = {};
+    users.forEach(u => { userMap[u.phone] = u; }); // store full user object
+
+    // -------------------- 5. Insert Members --------------------
+    const insertMemberQuery = `
+      INSERT INTO room_members 
+        (room_id, name, phone, joined_at, user_id, role) 
+      VALUES (?, ?, ?, ?, ?, ?)
+    `;
+
+    let creator_room_member_id = null;
+
+    for (const phone of uniquePhones) {
+      // Determine member name
+      const existingUser = userMap[phone];
+      const memberData = data.members.find(m => m.phone === phone);
+      //const nameFromInput = memberData?.name || 'Unknown';
+      //const name = existingUser ? existingUser.name : (phone === data.creator_phone ? existingUser.name : nameFromInput);
+
+      const formattedDate = dayjs(memberData?.joinDate || new Date()).format('YYYY-MM-DD');
+      const userId = existingUser ? existingUser.id : (phone === data.creator_phone ? data.created_by : null);
+      const role = phone === data.creator_phone ? 'admin' : 'member';
+
+      const [result] = await conn.execute(insertMemberQuery, [
+        room_id,
+        memberData?.name,
+        phone,
+        formattedDate,
+        userId,
+        role
+      ]);
+      if (phone === data.creator_phone) {
+        creator_room_member_id = result.insertId;
+      }
+    }
+
+    // -------------------- 6. Commit Transaction --------------------
     await conn.commit();
 
     return res.status(200).json({
       success: true,
       id: room_id,
-      name: data.name
+      name: data.name,
+      is_active: 1,
+      room_member_id: creator_room_member_id
     });
 
   } catch (err) {
     await conn.rollback();
-    return res.status(500).json({success: false, message: err.message });
+    console.error(err);
+    return res.status(500).json({ success: false, message: 'Failed to create room' });
   } finally {
     conn.release();
   }
@@ -165,6 +200,7 @@ exports.getRoomMembers = async (req, res) => {
                 rm.name AS member_name,
                 rm.joined_at,
                 rm.left_at,
+                rm.is_active,
                 CASE WHEN rm.is_active = 1 THEN 'Active' ELSE 'Left' END AS status
             FROM rooms r
             INNER JOIN room_members rm 
