@@ -88,7 +88,7 @@ exports.createExpense = async (req, res) => {
 // UPDATE EXPENSE
 // ------------------------------------
 exports.updateExpense = async (req, res) => {
-    const { id, room_id, member_id, category_id, amount, note, date } = req.body;
+    const { id, room_id, member_id, category_id, amount, note, date, updated_by } = req.body;
 
     const conn = await db.getConnection();
     // -----------------------------
@@ -155,8 +155,6 @@ exports.updateExpense = async (req, res) => {
     try {
         await conn.beginTransaction();
 
-        // const formattedDate = new Date(date);
-
         await conn.execute(
             `UPDATE expenses 
              SET amount = ?,
@@ -164,11 +162,11 @@ exports.updateExpense = async (req, res) => {
                  paid_by = ?, 
                  note = ?, 
                  expense_date = ?,
-                 updated_by = ?
+                 updated_by = ?,
                  updated_at = now()
              WHERE id = ?
                AND room_id = ?`,
-            [amount, category_id, member_id, note || null, new Date(date), id, room_id]
+            [amount, category_id, member_id, note || null, new Date(date),updated_by, id, room_id]
         );
 
         await conn.commit();
